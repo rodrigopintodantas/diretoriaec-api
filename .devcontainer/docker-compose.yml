@@ -1,0 +1,32 @@
+services:
+  node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: node
+    environment:
+      - NODE_ENV=stage
+      - DOCKER_CONTAINER=true
+    volumes:
+      - ..:/workspaces:cached
+    ports:
+      - "3001:3000"
+    command: /bin/sh -c "while sleep 1000; do :; done"
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:12.3
+    restart: "no"
+    environment:
+      - POSTGRES_DB=base
+      - POSTGRES_USER=base
+      - POSTGRES_PASSWORD=initial123
+    ports:
+      - "5447:5432"
+    volumes:
+      - base-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  base-postgres-data:
+    driver: local
