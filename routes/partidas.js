@@ -371,8 +371,18 @@ router.patch("/meus-jogos/:id/resultado", authorize(["Administrador"]), async (r
       novoStatus = String(status);
     }
 
+    const agora = new Date();
+    const yyyy = agora.getFullYear();
+    const mm = String(agora.getMonth() + 1).padStart(2, "0");
+    const dd = String(agora.getDate()).padStart(2, "0");
+    const hh = String(agora.getHours()).padStart(2, "0");
+    const min = String(agora.getMinutes()).padStart(2, "0");
+    const ss = String(agora.getSeconds()).padStart(2, "0");
+
     await partida.update(
       {
+        data: `${yyyy}-${mm}-${dd}`,
+        hora: `${hh}:${min}:${ss}`,
         placar_time_1: p1,
         placar_time_2: p2,
         status: novoStatus,
