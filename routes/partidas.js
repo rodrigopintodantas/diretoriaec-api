@@ -3,6 +3,11 @@ const { Op } = require("sequelize");
 const { authorize } = require("../auth/authorize");
 const { notificarConvocados, notificarReconvocacaoPresenca } = require("../lib/push-send");
 const {
+  findAllUsuarioTimeElenco,
+  findOneUsuarioTimeElencoNoTime,
+  findOneUsuarioTimeElencoPorUsuario,
+} = require("../lib/elenco-atleta");
+const {
   UsuarioTimeModel,
   TimeModel,
   PartidaModel,
@@ -23,14 +28,11 @@ const ORDEM_POSICAO = ["Goleiro", "Defensor", "Meio-Campista", "Atacante"];
 
 /** Elenco do time por posição (mesmo layout do admin), sem e-mail/telefone — para o atleta na tela de detalhes. */
 async function gruposElencoDoTime(timeId) {
-  const rows = await UsuarioTimeModel.findAll({
-    where: { TimeModelId: timeId },
-    include: [
-      { model: PapelModel, where: { nome: "Atleta" }, attributes: ["id", "nome"] },
-      { model: UsuarioModel, attributes: ["id", "nome", "login"] },
-      { model: PosicaoModel, attributes: ["id", "nome"], required: false },
-    ],
-  });
+  const rows = await findAllUsuarioTimeElenco(timeId, [
+    { model: PapelModel, attributes: ["id", "nome"] },
+    { model: UsuarioModel, attributes: ["id", "nome", "login"] },
+    { model: PosicaoModel, attributes: ["id", "nome"], required: false },
+  ]);
 
   const gruposMap = new Map();
 
@@ -539,15 +541,9 @@ router.patch("/meus-jogos/:id/resultado", authorize(["Administrador"]), async (r
               status: 400,
             });
           }
-          const ut = await UsuarioTimeModel.findOne({
-            where: {
-              UsuarioModelId: uid,
-              TimeModelId: timeDoLado,
-            },
-            transaction: t,
-          });
+          const ut = await findOneUsuarioTimeElencoPorUsuario(timeDoLado, uid, t);
           if (!ut) {
-            throw Object.assign(new Error("Atleta não pertence ao time deste lado."), { status: 400 });
+            throw Object.assign(new Error("Atleta não pertence ao elenco deste time neste lado."), { status: 400 });
           }
         }
 
@@ -618,22 +614,9 @@ router.put("/meus-jogos/:id/convocacao/atletas", authorize(["Administrador"]), a
       return res.status(400).json({ message: "Envie usuario_time_ids: [ id, ... ]" });
     }
 
-    const papelAtleta = await PapelModel.findOne({ where: { nome: "Atleta" } });
-    if (!papelAtleta) {
-      await t.rollback();
-      return res.status(500).json({ message: "Papel Atleta não encontrado no sistema." });
-    }
-
     const ids = [...new Set(usuario_time_ids.map((x) => Number(x)).filter((n) => !Number.isNaN(n)))];
     for (const utid of ids) {
-      const ut = await UsuarioTimeModel.findOne({
-        where: {
-          id: utid,
-          TimeModelId: timeId,
-          PapelModelId: papelAtleta.id,
-        },
-        transaction: t,
-      });
+      const ut = await findOneUsuarioTimeElencoNoTime(timeId, utid, t);
       if (!ut) {
         await t.rollback();
         return res.status(400).json({ message: `usuario_time_id inválido para este time: ${utid}` });
@@ -652,10 +635,22 @@ router.put("/meus-jogos/:id/convocacao/atletas", authorize(["Administrador"]), a
       transaction: t,
     });
     const conjuntoAntigoUt = new Set(linhasAntigasConv.map((x) => x.usuario_time_id));
+    const conjuntoNovoUt = new Set(ids);
 
-    await ConvocacaoAtletaModel.destroy({ where: { convocacao_id: conv.id }, transaction: t });
+    const idsParaRemover = [...conjuntoAntigoUt].filter((utid) => !conjuntoNovoUt.has(utid));
+    const idsParaAdicionar = ids.filter((utid) => !conjuntoAntigoUt.has(utid));
 
-    for (const utid of ids) {
+    if (idsParaRemover.length) {
+      await ConvocacaoAtletaModel.destroy({
+        where: {
+          convocacao_id: conv.id,
+          usuario_time_id: { [Op.in]: idsParaRemover },
+        },
+        transaction: t,
+      });
+    }
+
+    for (const utid of idsParaAdicionar) {
       await ConvocacaoAtletaModel.create(
         {
           convocacao_id: conv.id,
@@ -670,7 +665,7 @@ router.put("/meus-jogos/:id/convocacao/atletas", authorize(["Administrador"]), a
 
     await t.commit();
 
-    const novosConvocadosUt = ids.filter((utid) => !conjuntoAntigoUt.has(utid));
+    const novosConvocadosUt = idsParaAdicionar;
     if (novosConvocadosUt.length) {
       const uts = await UsuarioTimeModel.findAll({
         where: { id: { [Op.in]: novosConvocadosUt } },

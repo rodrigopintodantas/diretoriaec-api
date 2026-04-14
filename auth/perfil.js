@@ -2,6 +2,7 @@ const Usuario = require("../models").UsuarioModel;
 const Papel = require("../models").PapelModel;
 const Time = require("../models").TimeModel;
 const UsuarioTime = require("../models").UsuarioTimeModel;
+const Posicao = require("../models").PosicaoModel;
 
 module.exports = perfil;
 
@@ -14,6 +15,7 @@ async function perfil(req, res) {
         include: [
           { model: Papel, attributes: ["id", "nome", "dashboard"] },
           { model: Time, attributes: ["id", "nome"] },
+          { model: Posicao, attributes: ["id", "nome"], required: false },
         ],
       },
       attributes: ["id", "nome", "login", "email", "telefone", "dataNascimento"],
@@ -22,12 +24,14 @@ async function perfil(req, res) {
       const userRoles = (usuario.UsuarioTimeModels || []).map((ut) => {
         const p = ut.PapelModel || {};
         const t = ut.TimeModel || {};
+        const pos = ut.PosicaoModel;
         return {
           id: ut.id,
           papel: p.nome,
           optionLabel: `${p.nome} · ${t.nome}`,
           dashboard: p.dashboard,
           time: { id: t.id, nome: t.nome },
+          posicao: pos ? { id: pos.id, nome: pos.nome } : null,
         };
       });
 

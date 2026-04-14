@@ -1,4 +1,4 @@
-const { UsuarioTimeModel, PapelModel, UsuarioModel, TimeModel } = require("../models");
+const { UsuarioTimeModel, PapelModel, UsuarioModel, TimeModel, PosicaoModel } = require("../models");
 const { verifyAccessToken } = require("./jwt");
 
 /**
@@ -179,10 +179,16 @@ async function getPapeisPorUsuario(usuario) {
         model: TimeModel,
         attributes: ["id", "nome"],
       },
+      {
+        model: PosicaoModel,
+        attributes: ["id", "nome"],
+        required: false,
+      },
     ],
   });
 
   return rows.map((u) => {
+    const pos = u.PosicaoModel;
     return {
       id: u.id,
       nome: u.PapelModel.nome,
@@ -192,6 +198,7 @@ async function getPapeisPorUsuario(usuario) {
         id: u.TimeModel.id,
         nome: u.TimeModel.nome,
       },
+      posicao: pos ? { id: pos.id, nome: pos.nome } : null,
     };
   });
 }

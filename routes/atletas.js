@@ -1,5 +1,6 @@
 const express = require("express");
 const { authorize } = require("../auth/authorize");
+const { findAllUsuarioTimeElenco } = require("../lib/elenco-atleta");
 const {
   UsuarioTimeModel,
   UsuarioModel,
@@ -30,25 +31,18 @@ router.get("/meus-atletas", authorize(["Administrador"]), async (req, res, next)
     const time = vinculo.TimeModel;
     const timeId = vinculo.TimeModelId;
 
-    const rows = await UsuarioTimeModel.findAll({
-      where: { TimeModelId: timeId },
-      include: [
-        {
-          model: PapelModel,
-          where: { nome: "Atleta" },
-          attributes: ["id", "nome"],
-        },
-        {
-          model: UsuarioModel,
-          attributes: ["id", "nome", "login", "email", "telefone", "dataNascimento"],
-        },
-        {
-          model: PosicaoModel,
-          attributes: ["id", "nome"],
-          required: false,
-        },
-      ],
-    });
+    const rows = await findAllUsuarioTimeElenco(timeId, [
+      { model: PapelModel, attributes: ["id", "nome"] },
+      {
+        model: UsuarioModel,
+        attributes: ["id", "nome", "login", "email", "telefone", "dataNascimento"],
+      },
+      {
+        model: PosicaoModel,
+        attributes: ["id", "nome"],
+        required: false,
+      },
+    ]);
 
     const gruposMap = new Map();
 
