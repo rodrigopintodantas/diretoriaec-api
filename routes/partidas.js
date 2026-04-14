@@ -7,6 +7,7 @@ const {
   TimeModel,
   PartidaModel,
   PapelModel,
+  PosicaoModel,
   PartidaGolModel,
   UsuarioModel,
   ConvocacaoModel,
@@ -18,6 +19,65 @@ const router = express.Router();
 
 const STATUS_PARTIDA = ["AGENDADA", "REALIZADA", "CANCELADA", "ADIADA"];
 const PRESENCA_STATUS = ["PENDENTE", "CONFIRMADO", "RECUSADO"];
+const ORDEM_POSICAO = ["Goleiro", "Defensor", "Meio-Campista", "Atacante"];
+
+/** Elenco do time por posição (mesmo layout do admin), sem e-mail/telefone — para o atleta na tela de detalhes. */
+async function gruposElencoDoTime(timeId) {
+  const rows = await UsuarioTimeModel.findAll({
+    where: { TimeModelId: timeId },
+    include: [
+      { model: PapelModel, where: { nome: "Atleta" }, attributes: ["id", "nome"] },
+      { model: UsuarioModel, attributes: ["id", "nome", "login"] },
+      { model: PosicaoModel, attributes: ["id", "nome"], required: false },
+    ],
+  });
+
+  const gruposMap = new Map();
+
+  for (const row of rows) {
+    const pos = row.PosicaoModel;
+    const key = pos ? pos.nome : "__sem_posicao__";
+    if (!gruposMap.has(key)) {
+      gruposMap.set(key, {
+        posicao: pos ? { id: pos.id, nome: pos.nome } : null,
+        atletas: [],
+      });
+    }
+    const usuario = row.UsuarioModel;
+    gruposMap.get(key).atletas.push({
+      usuario_time_id: row.id,
+      id: usuario.id,
+      nome: usuario.nome,
+      login: usuario.login,
+      email: null,
+      telefone: null,
+      dataNascimento: null,
+    });
+  }
+
+  for (const g of gruposMap.values()) {
+    g.atletas.sort((a, b) => a.nome.localeCompare(b.nome));
+  }
+
+  return Array.from(gruposMap.values()).sort((a, b) => {
+    const an = a.posicao?.nome ?? "";
+    const bn = b.posicao?.nome ?? "";
+    const ia = ORDEM_POSICAO.indexOf(an);
+    const ib = ORDEM_POSICAO.indexOf(bn);
+    const aRank = ia === -1 ? 999 : ia;
+    const bRank = ib === -1 ? 999 : ib;
+    if (aRank !== bRank) {
+      return aRank - bRank;
+    }
+    if (!a.posicao) {
+      return 1;
+    }
+    if (!b.posicao) {
+      return -1;
+    }
+    return an.localeCompare(bn);
+  });
+}
 
 function siglaDeNome(nome, fallback = "TIM") {
   if (!nome || typeof nome !== "string") {
@@ -95,14 +155,33 @@ function serializarGols(gols) {
   }));
 }
 
-function serializarConvocacao(conv) {
+/**
+ * Carrega todas as linhas de convocacao_atleta sem JOIN no mesmo findAll (o include com UsuarioTimeModel
+ * pode, em alguns casos, alterar o resultado). Vínculos usuario_time são carregados numa segunda query.
+ */
+async function buscarConvocacaoSerializada(partidaId, timeId) {
+  const conv = await ConvocacaoModel.findOne({
+    where: { partida_id: partidaId, time_id: timeId },
+  });
   if (!conv) {
     return null;
   }
-  const itens = conv.ConvocacaoAtletaModels || [];
-  const linhas = itens.map((linha) => {
-    const ut = linha.UsuarioTimeModel;
-    const u = ut && ut.UsuarioModel ? ut.UsuarioModel : null;
+  const linhas = await ConvocacaoAtletaModel.findAll({
+    where: { convocacao_id: conv.id },
+    order: [["id", "ASC"]],
+  });
+  const utIds = [...new Set(linhas.map((l) => Number(l.usuario_time_id)).filter((n) => !Number.isNaN(n)))];
+  let utById = new Map();
+  if (utIds.length) {
+    const uts = await UsuarioTimeModel.findAll({
+      where: { id: { [Op.in]: utIds } },
+      include: [{ model: UsuarioModel, attributes: ["id", "nome", "login"] }],
+    });
+    utById = new Map(uts.map((ut) => [Number(ut.id), ut]));
+  }
+  const atletas = linhas.map((linha) => {
+    const ut = utById.get(Number(linha.usuario_time_id));
+    const u = ut && ut.UsuarioModel;
     return {
       id: linha.id,
       usuario_time_id: linha.usuario_time_id,
@@ -122,7 +201,7 @@ function serializarConvocacao(conv) {
     id: conv.id,
     partida_id: conv.partida_id,
     time_id: conv.time_id,
-    atletas: linhas,
+    atletas,
   };
 }
 
@@ -158,6 +237,66 @@ router.get("/meus-jogos", authorize(["Administrador"]), async (req, res, next) =
   }
 });
 
+/** Jogos em que o atleta (vínculo atual) está na convocação do próprio time. */
+router.get("/jogos-convocado", authorize(["Atleta"]), async (req, res, next) => {
+  try {
+    const vinculo = await getVinculoSelecionado(req);
+    if (!vinculo) {
+      return res.status(400).json({ message: "Vínculo não encontrado." });
+    }
+    const timeId = vinculo.TimeModelId;
+
+    const linhas = await ConvocacaoAtletaModel.findAll({
+      where: { usuario_time_id: vinculo.id },
+      include: [
+        {
+          model: ConvocacaoModel,
+          required: true,
+          where: { time_id: timeId },
+          include: [{ model: PartidaModel, required: true }],
+        },
+      ],
+    });
+
+    const vistos = new Set();
+    const partidas = [];
+    for (const linha of linhas) {
+      const conv = linha.ConvocacaoModel;
+      const p = conv && conv.PartidaModel;
+      if (!p || vistos.has(p.id)) {
+        continue;
+      }
+      vistos.add(p.id);
+      partidas.push(p);
+    }
+
+    partidas.sort((a, b) => {
+      const da = String(a.data);
+      const db = String(b.data);
+      if (da !== db) {
+        return da < db ? -1 : 1;
+      }
+      const ha = String(a.hora || "");
+      const hb = String(b.hora || "");
+      if (ha !== hb) {
+        return ha < hb ? -1 : 1;
+      }
+      return a.id - b.id;
+    });
+
+    res.json({
+      time: {
+        id: vinculo.TimeModel.id,
+        nome: vinculo.TimeModel.nome,
+        sigla: vinculo.TimeModel.sigla ?? siglaDeNome(vinculo.TimeModel.nome),
+      },
+      jogos: partidas.map(serializarJogo),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get("/meus-jogos/:id", authorize(["Administrador"]), async (req, res, next) => {
   try {
     const vinculo = await getVinculoSelecionado(req);
@@ -185,25 +324,12 @@ router.get("/meus-jogos/:id", authorize(["Administrador"]), async (req, res, nex
       ],
     });
 
-    const conv = await ConvocacaoModel.findOne({
-      where: { partida_id: partidaId, time_id: timeId },
-      include: [
-        {
-          model: ConvocacaoAtletaModel,
-          include: [
-            {
-              model: UsuarioTimeModel,
-              include: [{ model: UsuarioModel, attributes: ["id", "nome", "login"] }],
-            },
-          ],
-        },
-      ],
-    });
+    const convSer = await buscarConvocacaoSerializada(partidaId, timeId);
 
     res.json({
       partida: serializarJogo(partida),
       gols: serializarGols(gols),
-      convocacao: serializarConvocacao(conv),
+      convocacao: convSer,
     });
   } catch (err) {
     next(err);
@@ -237,18 +363,11 @@ router.get("/meus-jogos/:id/resumo", authorize(["Atleta"]), async (req, res, nex
       ],
     });
 
-    const conv = await ConvocacaoModel.findOne({
-      where: { partida_id: partidaId, time_id: timeId },
-    });
+    const convSer = await buscarConvocacaoSerializada(partidaId, timeId);
 
     let minhaLinha = null;
-    if (conv) {
-      const linha = await ConvocacaoAtletaModel.findOne({
-        where: {
-          convocacao_id: conv.id,
-          usuario_time_id: vinculo.id,
-        },
-      });
+    if (convSer?.atletas?.length) {
+      const linha = convSer.atletas.find((x) => x.usuario_time_id === vinculo.id);
       if (linha) {
         minhaLinha = {
           presenca_status: linha.presenca_status,
@@ -258,10 +377,20 @@ router.get("/meus-jogos/:id/resumo", authorize(["Atleta"]), async (req, res, nex
       }
     }
 
+    const grupos = await gruposElencoDoTime(timeId);
+
+    const meuTime = vinculo.TimeModel;
     res.json({
       partida: serializarJogo(partida),
       gols: serializarGols(gols),
       minha_presenca: minhaLinha,
+      convocacao: convSer,
+      grupos,
+      time: {
+        id: meuTime.id,
+        nome: meuTime.nome,
+        sigla: meuTime.sigla ?? siglaDeNome(meuTime.nome),
+      },
     });
   } catch (err) {
     next(err);
@@ -556,22 +685,9 @@ router.put("/meus-jogos/:id/convocacao/atletas", authorize(["Administrador"]), a
       });
     }
 
-    const convFinal = await ConvocacaoModel.findOne({
-      where: { id: conv.id },
-      include: [
-        {
-          model: ConvocacaoAtletaModel,
-          include: [
-            {
-              model: UsuarioTimeModel,
-              include: [{ model: UsuarioModel, attributes: ["id", "nome", "login"] }],
-            },
-          ],
-        },
-      ],
-    });
+    const convFinalSer = await buscarConvocacaoSerializada(partidaId, timeId);
 
-    return res.json({ convocacao: serializarConvocacao(convFinal) });
+    return res.json({ convocacao: convFinalSer });
   } catch (err) {
     await t.rollback();
     next(err);
