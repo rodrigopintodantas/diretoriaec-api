@@ -18,5 +18,7 @@ router.use("/atletas", require("./atletas"));
 router.use("/partidas", require("./partidas"));
 router.use("/push", require("./push"));
 router.use("/financeiro", require("./financeiro"));
+router.use("/oauth", require("./oauth.routes"));
+router.use("/payment", require("./payment.routes"));
 
 module.exports = router;
