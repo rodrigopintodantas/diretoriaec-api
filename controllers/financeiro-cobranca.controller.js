@@ -7,6 +7,7 @@ const {
 } = require("../models");
 const {
   ensureValidAccessToken,
+  createPaymentWithToken,
   createPreferenceWithToken,
   getPaymentWithToken,
 } = require("../services/mercadopago.service");
@@ -212,6 +213,15 @@ exports.createCobranca = async (req, res) => {
       return res.status(400).json({ message: "CPF do pagador inválido. Informe 11 dígitos válidos ou deixe em branco." });
     }
 
+    const usarCheckoutPro = process.env.FINANCEIRO_COBRANCA_USAR_CHECKOUT_PRO === "true";
+    if (!usarCheckoutPro && !cpfValido) {
+      return res.status(400).json({
+        message:
+          "Para PIX na aplicação (sem redirecionar ao Mercado Pago) é obrigatório informar CPF válido do pagador." +
+          " Para usar o link externo do Checkout Pro, defina FINANCEIRO_COBRANCA_USAR_CHECKOUT_PRO=true no servidor.",
+      });
+    }
+
     const cobranca = await FinanceiroCobrancaModel.create({
       TimeModelId: timeId,
       UsuarioTimeModelId: alvo.id,
@@ -234,7 +244,6 @@ exports.createCobranca = async (req, res) => {
       ? `${publicBase}${notificationPath}${webhookToken ? `?token=${encodeURIComponent(webhookToken)}` : ""}`
       : undefined;
 
-    const successUrl = `${front}/admin/financeiro?mp=cobranca_ok`;
     const nomeAtleta = alvo.UsuarioModel?.nome ? String(alvo.UsuarioModel.nome) : "";
     const { first_name, last_name } = nomeParaPayerMercadoPago(nomeAtleta);
     const payer = {
@@ -246,6 +255,60 @@ exports.createCobranca = async (req, res) => {
       payer.identification = { type: "CPF", number: cpfValido };
     }
 
+    const warningWebhook =
+      !publicBase &&
+      "Defina API_PUBLIC_URL na API para que o Mercado Pago notifique pagamentos automaticamente (webhook).";
+
+    if (!usarCheckoutPro) {
+      const paymentBody = {
+        transaction_amount: Number(Number(valorNum).toFixed(2)),
+        description: descricao.slice(0, 256),
+        payment_method_id: "pix",
+        payer: {
+          email,
+          first_name,
+          last_name,
+          identification: { type: "CPF", number: cpfValido },
+        },
+        external_reference: externalReference,
+      };
+      if (notificationUrl) {
+        paymentBody.notification_url = notificationUrl;
+      }
+
+      const payment = await createPaymentWithToken(accessToken, paymentBody, {
+        idempotencyKey: `fc-${cobranca.id}-${externalReference}`,
+      });
+
+      const tx = payment.point_of_interaction?.transaction_data || {};
+      const qrB64 = tx.qr_code_base64 || null;
+      const qrCode = tx.qr_code || null;
+
+      await cobranca.update({
+        mpPaymentId: payment.id != null ? String(payment.id) : null,
+        mpPreferenceId: null,
+        initPoint: null,
+        sandboxInitPoint: null,
+      });
+
+      return res.status(201).json({
+        fluxo: "pix_embutido",
+        id: cobranca.id,
+        externalReference,
+        status: cobranca.status,
+        mpPaymentId: payment.id != null ? String(payment.id) : null,
+        mpStatus: payment.status,
+        mpStatusDetail: payment.status_detail || null,
+        pix: {
+          qrCodeBase64: qrB64,
+          qrCode,
+          ticketUrl: tx.ticket_url || null,
+        },
+        warning: warningWebhook || undefined,
+      });
+    }
+
+    const successUrl = `${front}/admin/financeiro?mp=cobranca_ok`;
     const preferenceBody = {
       items: [
         {
@@ -286,21 +349,20 @@ exports.createCobranca = async (req, res) => {
     });
 
     return res.status(201).json({
+      fluxo: "checkout_pro",
       id: cobranca.id,
       externalReference,
       status: cobranca.status,
       initPoint: pref.init_point || null,
       sandboxInitPoint: pref.sandbox_init_point || null,
       mpPreferenceId: pref.id != null ? String(pref.id) : null,
-      warning:
-        !publicBase &&
-        "Defina API_PUBLIC_URL na API para que o Mercado Pago notifique pagamentos automaticamente (webhook).",
+      warning: warningWebhook || undefined,
     });
   } catch (error) {
     console.error(error.response?.data || error.message);
     const status = error.response?.status || 500;
     return res.status(status >= 400 && status < 600 ? status : 500).json({
-      message: "Erro ao criar preferência no Mercado Pago.",
+      message: "Erro ao criar cobrança no Mercado Pago.",
       details: error.response?.data || null,
     });
   }

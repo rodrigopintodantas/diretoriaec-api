@@ -43,15 +43,20 @@ async function exchangeAuthorizationCode(code) {
   return response.data;
 }
 
-async function createPaymentWithToken(accessToken, payload) {
+async function createPaymentWithToken(accessToken, payload, options = {}) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  if (options.idempotencyKey) {
+    headers["X-Idempotency-Key"] = String(options.idempotencyKey);
+  }
+
   const response = await axios.post(
     `${config.apiBase.replace(/\/$/, "")}/v1/payments`,
     payload,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    },
+    { headers },
   );
 
   return response.data;
