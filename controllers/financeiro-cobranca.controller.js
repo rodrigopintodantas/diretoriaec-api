@@ -44,6 +44,34 @@ function mercadoPagoAceitaAutoReturnParaUrl(successUrl) {
   }
 }
 
+/** Apenas dígitos; retorna null se inválido. */
+function validarCpfBrasil(raw) {
+  if (raw == null || raw === "") return null;
+  const d = String(raw).replace(/\D/g, "");
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return null;
+  let s = 0;
+  for (let i = 0; i < 9; i += 1) s += parseInt(d[i], 10) * (10 - i);
+  let r = (s * 10) % 11;
+  if (r === 10 || r === 11) r = 0;
+  if (r !== parseInt(d[9], 10)) return null;
+  s = 0;
+  for (let i = 0; i < 10; i += 1) s += parseInt(d[i], 10) * (11 - i);
+  r = (s * 10) % 11;
+  if (r === 10 || r === 11) r = 0;
+  if (r !== parseInt(d[10], 10)) return null;
+  return d;
+}
+
+function nomeParaPayerMercadoPago(nomeCompleto) {
+  const partes = String(nomeCompleto ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const first = partes[0] || "Cliente";
+  const last = partes.length > 1 ? partes.slice(1).join(" ") : first;
+  return { first_name: first.slice(0, 256), last_name: last.slice(0, 256) };
+}
+
 /**
  * Checkout Pro: por padrão não restringe meios (todos os que a conta MP permitir).
  * Para excluir cartão/débito/boleto na preferência, defina MERCADO_PAGO_PREFERENCIA_APENAS_PIX=true no ambiente.
@@ -178,6 +206,12 @@ exports.createCobranca = async (req, res) => {
       });
     }
 
+    const cpfInformado = req.body?.payer_cpf != null ? String(req.body.payer_cpf).trim() : "";
+    const cpfValido = validarCpfBrasil(cpfInformado);
+    if (cpfInformado.length > 0 && !cpfValido) {
+      return res.status(400).json({ message: "CPF do pagador inválido. Informe 11 dígitos válidos ou deixe em branco." });
+    }
+
     const cobranca = await FinanceiroCobrancaModel.create({
       TimeModelId: timeId,
       UsuarioTimeModelId: alvo.id,
@@ -201,6 +235,17 @@ exports.createCobranca = async (req, res) => {
       : undefined;
 
     const successUrl = `${front}/admin/financeiro?mp=cobranca_ok`;
+    const nomeAtleta = alvo.UsuarioModel?.nome ? String(alvo.UsuarioModel.nome) : "";
+    const { first_name, last_name } = nomeParaPayerMercadoPago(nomeAtleta);
+    const payer = {
+      email,
+      first_name,
+      last_name,
+    };
+    if (cpfValido) {
+      payer.identification = { type: "CPF", number: cpfValido };
+    }
+
     const preferenceBody = {
       items: [
         {
@@ -210,7 +255,7 @@ exports.createCobranca = async (req, res) => {
           currency_id: "BRL",
         },
       ],
-      payer: { email },
+      payer,
       external_reference: externalReference,
       back_urls: {
         success: successUrl,
