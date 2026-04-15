@@ -45,13 +45,12 @@ function mercadoPagoAceitaAutoReturnParaUrl(successUrl) {
 }
 
 /**
- * Checkout Pro: restringe opções excluindo cartões e boleto (PIX segue como transferência).
- * Não usar default_payment_method_id: "pix" — pode quebrar o fluxo e desabilitar o botão de PIX no checkout.
- * Defina MERCADO_PAGO_PREFERENCIA_APENAS_PIX=false para voltar ao comportamento padrão (todos os meios).
+ * Checkout Pro: por padrão não restringe meios (todos os que a conta MP permitir).
+ * Para excluir cartão/débito/boleto na preferência, defina MERCADO_PAGO_PREFERENCIA_APENAS_PIX=true no ambiente.
  * Obs.: o MP não permite excluir "dinheiro em conta" (saldo); pode continuar aparecendo.
  */
 function paymentMethodsPreferenciaPix() {
-  if (process.env.MERCADO_PAGO_PREFERENCIA_APENAS_PIX === "false") {
+  if (process.env.MERCADO_PAGO_PREFERENCIA_APENAS_PIX !== "true") {
     return null;
   }
   return {
