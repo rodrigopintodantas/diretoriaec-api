@@ -10,6 +10,7 @@ const {
   PapelModel,
   TimeMercadoPagoOauthModel,
 } = require("../models");
+const financeiroCobranca = require("../controllers/financeiro-cobranca.controller");
 
 const router = express.Router();
 
@@ -172,6 +173,18 @@ router.get("/mercado-pago/status", authorize(["Administrador"]), async (req, res
     return res.status(500).json({ message: "Erro ao consultar Mercado Pago." });
   }
 });
+
+router.get("/cobrancas", authorize(["Administrador"]), financeiroCobranca.listCobrancas);
+router.post("/cobrancas", authorize(["Administrador"]), financeiroCobranca.createCobranca);
+router.post(
+  "/cobrancas/:id/sincronizar",
+  authorize(["Administrador"]),
+  financeiroCobranca.syncCobranca,
+);
+
+/** Notificação Mercado Pago (sem JWT). Configure notification_url na preferência com API_PUBLIC_URL. */
+router.post("/mercado-pago/webhook", financeiroCobranca.handleMercadoPagoWebhook);
+router.get("/mercado-pago/webhook", financeiroCobranca.handleMercadoPagoWebhook);
 
 router.get("/mercado-pago/conectar", authorize(["Administrador"]), async (req, res) => {
   try {

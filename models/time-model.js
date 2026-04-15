@@ -48,6 +48,11 @@ module.exports = (sequelize, DataTypes) => {
       onDelete: "CASCADE",
       onUpdate: "CASCADE",
     });
+    TimeModel.hasMany(models.FinanceiroCobrancaModel, {
+      foreignKey: "TimeModelId",
+      onDelete: "CASCADE",
+      onUpdate: "CASCADE",
+    });
   };
 
   return TimeModel;
