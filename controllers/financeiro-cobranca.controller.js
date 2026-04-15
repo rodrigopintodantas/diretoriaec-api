@@ -17,6 +17,48 @@ function mapPaymentStatusToLocal(mpStatus) {
   return "pendente";
 }
 
+/** Base do front para back_urls (FRONTEND_URL ou localhost). */
+function normalizeFrontendBase() {
+  const raw = (process.env.FRONTEND_URL || "http://localhost:4200").trim();
+  const base = raw.replace(/\/$/, "");
+  if (!/^https?:\/\//i.test(base)) {
+    return "http://localhost:4200";
+  }
+  return base;
+}
+
+/**
+ * Com `auto_return`, o MP exige `back_urls.success` válido (em produção costuma exigir HTTPS).
+ * Em http://localhost ou https://* podemos usar auto_return; caso contrário omitimos para evitar invalid_auto_return.
+ */
+function mercadoPagoAceitaAutoReturnParaUrl(successUrl) {
+  try {
+    const u = new URL(successUrl);
+    if (u.protocol === "https:") return true;
+    if (u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1")) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checkout Pro: restringe a PIX excluindo cartões e boleto (sandbox e produção).
+ * Defina MERCADO_PAGO_PREFERENCIA_APENAS_PIX=false para voltar ao comportamento padrão (todos os meios).
+ * Obs.: o MP não permite excluir "dinheiro em conta" (saldo); pode continuar aparecendo.
+ */
+function paymentMethodsPreferenciaPix() {
+  if (process.env.MERCADO_PAGO_PREFERENCIA_APENAS_PIX === "false") {
+    return null;
+  }
+  return {
+    excluded_payment_types: [{ id: "credit_card" }, { id: "debit_card" }, { id: "ticket" }],
+    default_payment_method_id: "pix",
+  };
+}
+
 async function getVinculoAdmin(req) {
   const membershipId = parseInt(String(req.headers.up), 10);
   if (Number.isNaN(membershipId)) {
@@ -152,13 +194,14 @@ exports.createCobranca = async (req, res) => {
     const accessToken = await ensureValidAccessToken(oauthRow);
 
     const publicBase = (process.env.API_PUBLIC_URL || "").replace(/\/$/, "");
-    const front = (process.env.FRONTEND_URL || "http://localhost:4200").replace(/\/$/, "");
+    const front = normalizeFrontendBase();
     const webhookToken = process.env.MERCADO_PAGO_WEBHOOK_TOKEN || "";
     const notificationPath = `/api/financeiro/mercado-pago/webhook`;
     const notificationUrl = publicBase
       ? `${publicBase}${notificationPath}${webhookToken ? `?token=${encodeURIComponent(webhookToken)}` : ""}`
       : undefined;
 
+    const successUrl = `${front}/admin/financeiro?mp=cobranca_ok`;
     const preferenceBody = {
       items: [
         {
@@ -171,15 +214,23 @@ exports.createCobranca = async (req, res) => {
       payer: { email },
       external_reference: externalReference,
       back_urls: {
-        success: `${front}/admin/financeiro?mp=cobranca_ok`,
+        success: successUrl,
         failure: `${front}/admin/financeiro?mp=cobranca_erro`,
         pending: `${front}/admin/financeiro?mp=cobranca_pendente`,
       },
-      auto_return: "approved",
     };
+
+    if (mercadoPagoAceitaAutoReturnParaUrl(successUrl)) {
+      preferenceBody.auto_return = "approved";
+    }
 
     if (notificationUrl) {
       preferenceBody.notification_url = notificationUrl;
+    }
+
+    const pixOnly = paymentMethodsPreferenciaPix();
+    if (pixOnly) {
+      preferenceBody.payment_methods = pixOnly;
     }
 
     const pref = await createPreferenceWithToken(accessToken, preferenceBody);
