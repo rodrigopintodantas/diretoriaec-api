@@ -7,6 +7,7 @@ const {
 } = require("../models");
 const {
   ensureValidAccessToken,
+  createPaymentWithToken,
   getPaymentWithToken,
 } = require("../services/mercadopago.service");
 const { randomUUID } = require("crypto");
@@ -34,7 +35,48 @@ function calcularStatusGrupo(itens) {
   return statuses[0];
 }
 
+function validarCpfBrasil(raw) {
+  if (raw == null || raw === "") return null;
+  const d = String(raw).replace(/\D/g, "");
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return null;
+  let s = 0;
+  for (let i = 0; i < 9; i += 1) s += parseInt(d[i], 10) * (10 - i);
+  let r = (s * 10) % 11;
+  if (r === 10 || r === 11) r = 0;
+  if (r !== parseInt(d[9], 10)) return null;
+  s = 0;
+  for (let i = 0; i < 10; i += 1) s += parseInt(d[i], 10) * (11 - i);
+  r = (s * 10) % 11;
+  if (r === 10 || r === 11) r = 0;
+  if (r !== parseInt(d[10], 10)) return null;
+  return d;
+}
+
+function nomeParaPayerMercadoPago(nomeCompleto) {
+  const partes = String(nomeCompleto ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const first = partes[0] || "Cliente";
+  const last = partes.length > 1 ? partes.slice(1).join(" ") : first;
+  return { first_name: first.slice(0, 256), last_name: last.slice(0, 256) };
+}
+
 async function getVinculoAdmin(req) {
+  const membershipId = parseInt(String(req.headers.up), 10);
+  if (Number.isNaN(membershipId)) {
+    return null;
+  }
+  return UsuarioTimeModel.findOne({
+    where: {
+      id: membershipId,
+      UsuarioModelId: req.auth.UsuarioId,
+    },
+    include: [{ model: PapelModel, attributes: ["nome"] }],
+  });
+}
+
+async function getVinculoAtleta(req) {
   const membershipId = parseInt(String(req.headers.up), 10);
   if (Number.isNaN(membershipId)) {
     return null;
@@ -115,6 +157,187 @@ exports.listCobrancas = async (req, res) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ message: "Erro ao listar cobranças." });
+  }
+};
+
+exports.listCobrancasAtleta = async (req, res) => {
+  try {
+    const vinculo = await getVinculoAtleta(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Atleta") {
+      return res.status(403).json({ message: "Apenas atletas podem listar suas cobranças." });
+    }
+
+    const rows = await FinanceiroCobrancaModel.findAll({
+      where: {
+        TimeModelId: vinculo.TimeModelId,
+        UsuarioTimeModelId: vinculo.id,
+      },
+      order: [["createdAt", "DESC"]],
+      limit: 100,
+    });
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      grupoCobrancaId: r.grupoCobrancaId,
+      nome: r.nome,
+      descricao: r.descricao,
+      status: r.status,
+      valor: r.valor,
+      valorCobrado: r.valorCobrado,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
+
+    const pendentes = items.filter((item) => String(item.status || "").trim().toLowerCase() === "pendente");
+    const anteriores = items.filter((item) => String(item.status || "").trim().toLowerCase() !== "pendente");
+
+    return res.status(200).json({ pendentes, anteriores });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ message: "Erro ao listar cobranças do atleta." });
+  }
+};
+
+exports.getCobrancaAtleta = async (req, res) => {
+  try {
+    const vinculo = await getVinculoAtleta(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Atleta") {
+      return res.status(403).json({ message: "Apenas atletas podem consultar suas cobranças." });
+    }
+
+    const id = parseInt(String(req.params.id), 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "Id inválido." });
+    }
+
+    const cobranca = await FinanceiroCobrancaModel.findOne({
+      where: {
+        id,
+        TimeModelId: vinculo.TimeModelId,
+        UsuarioTimeModelId: vinculo.id,
+      },
+    });
+    if (!cobranca) {
+      return res.status(404).json({ message: "Cobrança não encontrada." });
+    }
+
+    return res.status(200).json({
+      id: cobranca.id,
+      grupoCobrancaId: cobranca.grupoCobrancaId,
+      nome: cobranca.nome,
+      descricao: cobranca.descricao,
+      status: cobranca.status,
+      valor: cobranca.valor,
+      valorCobrado: cobranca.valorCobrado,
+      createdAt: cobranca.createdAt,
+      updatedAt: cobranca.updatedAt,
+      mpPaymentId: cobranca.mpPaymentId,
+      externalReference: cobranca.externalReference,
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ message: "Erro ao consultar cobrança do atleta." });
+  }
+};
+
+exports.gerarPixCobrancaAtleta = async (req, res) => {
+  try {
+    const vinculo = await getVinculoAtleta(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Atleta") {
+      return res.status(403).json({ message: "Apenas atletas podem gerar PIX para suas cobranças." });
+    }
+
+    const id = parseInt(String(req.params.id), 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "Id inválido." });
+    }
+
+    const cobranca = await FinanceiroCobrancaModel.findOne({
+      where: {
+        id,
+        TimeModelId: vinculo.TimeModelId,
+        UsuarioTimeModelId: vinculo.id,
+      },
+      include: [
+        {
+          model: UsuarioTimeModel,
+          attributes: ["id"],
+          include: [{ model: UsuarioModel, attributes: ["nome", "email"] }],
+        },
+      ],
+    });
+    if (!cobranca) {
+      return res.status(404).json({ message: "Cobrança não encontrada." });
+    }
+
+    const statusAtual = String(cobranca.status || "").trim().toLowerCase();
+    if (statusAtual !== "pendente") {
+      return res.status(400).json({ message: "Somente cobranças pendentes podem gerar PIX." });
+    }
+
+    const cpfValido = validarCpfBrasil(req.body?.payer_cpf);
+    if (!cpfValido) {
+      return res.status(400).json({ message: "CPF do pagador inválido. Informe 11 dígitos válidos." });
+    }
+
+    const oauthRow = await TimeMercadoPagoOauthModel.findOne({
+      where: { TimeModelId: vinculo.TimeModelId },
+    });
+    if (!oauthRow) {
+      return res.status(400).json({ message: "Mercado Pago não conectado para este clube." });
+    }
+
+    const accessToken = await ensureValidAccessToken(oauthRow);
+    const email = cobranca.payerEmail || cobranca.UsuarioTimeModel?.UsuarioModel?.email;
+    if (!email) {
+      return res.status(400).json({ message: "Atleta sem e-mail cadastrado para gerar o pagamento." });
+    }
+
+    const nomePagador = cobranca.UsuarioTimeModel?.UsuarioModel?.nome || "Cliente";
+    const { first_name, last_name } = nomeParaPayerMercadoPago(nomePagador);
+    const externalReference = cobranca.externalReference || `fc-${cobranca.id}`;
+
+    const paymentBody = {
+      transaction_amount: Number(cobranca.valorCobrado),
+      description: `${cobranca.nome} - ${cobranca.descricao}`.slice(0, 256),
+      payment_method_id: "pix",
+      payer: {
+        email: String(email).trim(),
+        first_name,
+        last_name,
+        identification: { type: "CPF", number: cpfValido },
+      },
+      external_reference: externalReference,
+    };
+
+    const payment = await createPaymentWithToken(accessToken, paymentBody, {
+      idempotencyKey: `pix-cobranca-${cobranca.id}-${cpfValido}`,
+    });
+
+    const tx = payment.point_of_interaction?.transaction_data || {};
+    await cobranca.update({
+      externalReference,
+      mpPaymentId: payment.id != null ? String(payment.id) : cobranca.mpPaymentId,
+      payerEmail: String(email).trim(),
+    });
+
+    return res.status(200).json({
+      id: cobranca.id,
+      status: cobranca.status,
+      mpPaymentId: payment.id != null ? String(payment.id) : null,
+      pix: {
+        qrCodeBase64: tx.qr_code_base64 || null,
+        qrCode: tx.qr_code || null,
+        ticketUrl: tx.ticket_url || null,
+      },
+    });
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    const status = error.response?.status || 500;
+    return res.status(status >= 400 && status < 600 ? status : 500).json({
+      message: "Erro ao gerar PIX da cobrança.",
+      details: error.response?.data || null,
+    });
   }
 };
 

@@ -175,6 +175,9 @@ router.get("/mercado-pago/status", authorize(["Administrador"]), async (req, res
 });
 
 router.get("/cobrancas", authorize(["Administrador"]), financeiroCobranca.listCobrancas);
+router.get("/cobrancas/atleta", authorize(["Atleta"]), financeiroCobranca.listCobrancasAtleta);
+router.get("/cobrancas/atleta/:id", authorize(["Atleta"]), financeiroCobranca.getCobrancaAtleta);
+router.post("/cobrancas/atleta/:id/gerar-pix", authorize(["Atleta"]), financeiroCobranca.gerarPixCobrancaAtleta);
 router.post("/cobrancas", authorize(["Administrador"]), financeiroCobranca.createCobranca);
 router.post(
   "/cobrancas/:id/sincronizar",
