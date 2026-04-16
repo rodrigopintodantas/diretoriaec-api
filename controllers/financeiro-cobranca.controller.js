@@ -7,10 +7,9 @@ const {
 } = require("../models");
 const {
   ensureValidAccessToken,
-  createPaymentWithToken,
-  createPreferenceWithToken,
   getPaymentWithToken,
 } = require("../services/mercadopago.service");
+const { randomUUID } = require("crypto");
 
 function mapPaymentStatusToLocal(mpStatus) {
   if (mpStatus === "approved") return "pago";
@@ -18,73 +17,21 @@ function mapPaymentStatusToLocal(mpStatus) {
   return "pendente";
 }
 
-/** Base do front para back_urls (FRONTEND_URL ou localhost). */
-function normalizeFrontendBase() {
-  const raw = (process.env.FRONTEND_URL || "http://localhost:4200").trim();
-  const base = raw.replace(/\/$/, "");
-  if (!/^https?:\/\//i.test(base)) {
-    return "http://localhost:4200";
-  }
-  return base;
+const TAXA_MP = 0.009;
+
+function calcularValorCobrado(valorInformado) {
+  const valorCentavos = Math.round(Number(valorInformado) * 100);
+  const valorCobradoCentavos = Math.ceil(valorCentavos / (1 - TAXA_MP));
+  return Number((valorCobradoCentavos / 100).toFixed(2));
 }
 
-/**
- * Com `auto_return`, o MP exige `back_urls.success` válido (em produção costuma exigir HTTPS).
- * Em http://localhost ou https://* podemos usar auto_return; caso contrário omitimos para evitar invalid_auto_return.
- */
-function mercadoPagoAceitaAutoReturnParaUrl(successUrl) {
-  try {
-    const u = new URL(successUrl);
-    if (u.protocol === "https:") return true;
-    if (u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1")) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/** Apenas dígitos; retorna null se inválido. */
-function validarCpfBrasil(raw) {
-  if (raw == null || raw === "") return null;
-  const d = String(raw).replace(/\D/g, "");
-  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return null;
-  let s = 0;
-  for (let i = 0; i < 9; i += 1) s += parseInt(d[i], 10) * (10 - i);
-  let r = (s * 10) % 11;
-  if (r === 10 || r === 11) r = 0;
-  if (r !== parseInt(d[9], 10)) return null;
-  s = 0;
-  for (let i = 0; i < 10; i += 1) s += parseInt(d[i], 10) * (11 - i);
-  r = (s * 10) % 11;
-  if (r === 10 || r === 11) r = 0;
-  if (r !== parseInt(d[10], 10)) return null;
-  return d;
-}
-
-function nomeParaPayerMercadoPago(nomeCompleto) {
-  const partes = String(nomeCompleto ?? "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  const first = partes[0] || "Cliente";
-  const last = partes.length > 1 ? partes.slice(1).join(" ") : first;
-  return { first_name: first.slice(0, 256), last_name: last.slice(0, 256) };
-}
-
-/**
- * Checkout Pro: por padrão não restringe meios (todos os que a conta MP permitir).
- * Para excluir cartão/débito/boleto na preferência, defina MERCADO_PAGO_PREFERENCIA_APENAS_PIX=true no ambiente.
- * Obs.: o MP não permite excluir "dinheiro em conta" (saldo); pode continuar aparecendo.
- */
-function paymentMethodsPreferenciaPix() {
-  if (process.env.MERCADO_PAGO_PREFERENCIA_APENAS_PIX !== "true") {
-    return null;
-  }
-  return {
-    excluded_payment_types: [{ id: "credit_card" }, { id: "debit_card" }, { id: "ticket" }],
-  };
+function calcularStatusGrupo(itens) {
+  const statuses = [...new Set(itens.map((i) => String(i.status || "").trim().toLowerCase()))];
+  if (!statuses.length) return "pendente";
+  if (statuses.length === 1) return statuses[0];
+  if (statuses.includes("pendente")) return "pendente";
+  if (statuses.includes("pago")) return "parcial";
+  return statuses[0];
 }
 
 async function getVinculoAdmin(req) {
@@ -121,21 +68,34 @@ exports.listCobrancas = async (req, res) => {
       ],
     });
 
-    const items = rows.map((r) => {
+    const grupos = new Map();
+    for (const r of rows) {
       const u = r.UsuarioTimeModel?.UsuarioModel;
-      return {
+      const grupoId = r.grupoCobrancaId || `legacy-${r.id}`;
+      if (!grupos.has(grupoId)) {
+        grupos.set(grupoId, {
+          id: grupoId,
+          nome: r.nome,
+          descricao: r.descricao,
+          valor: r.valor,
+          valorCobrado: r.valorCobrado,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+          atletas: [],
+        });
+      }
+      const grupo = grupos.get(grupoId);
+      grupo.atletas.push({
         id: r.id,
-        valor: r.valor,
-        descricao: r.descricao,
         status: r.status,
+        valor: r.valor,
+        valorCobrado: r.valorCobrado,
         externalReference: r.externalReference,
         mpPreferenceId: r.mpPreferenceId,
         mpPaymentId: r.mpPaymentId,
         initPoint: r.initPoint,
         sandboxInitPoint: r.sandboxInitPoint,
         payerEmail: r.payerEmail,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt,
         atleta: u
           ? {
               nome: u.nome,
@@ -143,8 +103,13 @@ exports.listCobrancas = async (req, res) => {
               login: u.login,
             }
           : null,
-      };
-    });
+      });
+    }
+
+    const items = [...grupos.values()].map((grupo) => ({
+      ...grupo,
+      status: calcularStatusGrupo(grupo.atletas),
+    }));
 
     return res.status(200).json({ items });
   } catch (e) {
@@ -157,29 +122,32 @@ exports.createCobranca = async (req, res) => {
   try {
     const vinculo = await getVinculoAdmin(req);
     if (!vinculo || vinculo.PapelModel?.nome !== "Administrador") {
-      return res.status(403).json({ message: "Apenas administradores podem gerar cobranças." });
+      return res.status(403).json({ message: "Apenas administradores podem criar cobranças." });
     }
 
     const timeId = vinculo.TimeModelId;
-    const oauthRow = await TimeMercadoPagoOauthModel.findOne({
-      where: { TimeModelId: timeId },
-    });
-    if (!oauthRow) {
-      return res.status(400).json({ message: "Conecte a conta Mercado Pago do clube antes de gerar cobranças." });
-    }
-
-    const usuarioTimeId = parseInt(String(req.body?.usuario_time_id), 10);
     const valorNum = Number(req.body?.valor);
+    const nome = String(req.body?.nome ?? "").trim();
     const descricao = String(req.body?.descricao ?? "").trim();
 
-    if (Number.isNaN(usuarioTimeId) || usuarioTimeId <= 0) {
-      return res.status(400).json({ message: "Informe o atleta (usuario_time_id)." });
-    }
     if (!Number.isFinite(valorNum) || valorNum < 0.5) {
       return res.status(400).json({ message: "Valor mínimo é R$ 0,50." });
     }
+    if (nome.length < 3 || nome.length > 120) {
+      return res.status(400).json({ message: "Nome deve ter entre 3 e 120 caracteres." });
+    }
     if (descricao.length < 3 || descricao.length > 500) {
       return res.status(400).json({ message: "Descrição deve ter entre 3 e 500 caracteres." });
+    }
+    const valorCobradoNum = calcularValorCobrado(valorNum);
+
+    let idsRaw = Array.isArray(req.body?.usuario_time_ids) ? req.body.usuario_time_ids : [];
+    if (!idsRaw.length && req.body?.usuario_time_id != null) {
+      idsRaw = [req.body.usuario_time_id];
+    }
+    const usuarioTimeIds = [...new Set(idsRaw.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!usuarioTimeIds.length) {
+      return res.status(400).json({ message: "Selecione ao menos um atleta para a cobrança." });
     }
 
     const papelAtleta = await PapelModel.findOne({ where: { nome: "Atleta" }, attributes: ["id"] });
@@ -187,182 +155,59 @@ exports.createCobranca = async (req, res) => {
       return res.status(500).json({ message: "Papel Atleta não encontrado no sistema." });
     }
 
-    const alvo = await UsuarioTimeModel.findOne({
+    const atletasAlvo = await UsuarioTimeModel.findAll({
       where: {
-        id: usuarioTimeId,
+        id: usuarioTimeIds,
         TimeModelId: timeId,
         PapelModelId: papelAtleta.id,
       },
       include: [{ model: UsuarioModel, attributes: ["id", "nome", "email"] }],
     });
 
-    if (!alvo) {
-      return res.status(400).json({ message: "Atleta não encontrado neste time." });
+    if (atletasAlvo.length !== usuarioTimeIds.length) {
+      return res.status(400).json({ message: "Um ou mais atletas selecionados não pertencem a este time." });
     }
 
-    const email = alvo.UsuarioModel?.email ? String(alvo.UsuarioModel.email).trim() : "";
-    if (!email) {
-      return res.status(400).json({
-        message: "O atleta precisa ter e-mail cadastrado para gerar o link de pagamento.",
+    const grupoCobrancaId = randomUUID();
+    const cobrancasCriadas = [];
+    for (const alvo of atletasAlvo) {
+      const email = alvo.UsuarioModel?.email ? String(alvo.UsuarioModel.email).trim() : null;
+      const cobranca = await FinanceiroCobrancaModel.create({
+        TimeModelId: timeId,
+        UsuarioTimeModelId: alvo.id,
+        grupoCobrancaId,
+        valor: valorNum.toFixed(2),
+        valorCobrado: valorCobradoNum.toFixed(2),
+        nome,
+        descricao,
+        status: "pendente",
+        payerEmail: email,
       });
-    }
-
-    const cpfInformado = req.body?.payer_cpf != null ? String(req.body.payer_cpf).trim() : "";
-    const cpfValido = validarCpfBrasil(cpfInformado);
-    if (cpfInformado.length > 0 && !cpfValido) {
-      return res.status(400).json({ message: "CPF do pagador inválido. Informe 11 dígitos válidos ou deixe em branco." });
-    }
-
-    const usarCheckoutPro = process.env.FINANCEIRO_COBRANCA_USAR_CHECKOUT_PRO === "true";
-    if (!usarCheckoutPro && !cpfValido) {
-      return res.status(400).json({
-        message:
-          "Para PIX na aplicação (sem redirecionar ao Mercado Pago) é obrigatório informar CPF válido do pagador." +
-          " Para usar o link externo do Checkout Pro, defina FINANCEIRO_COBRANCA_USAR_CHECKOUT_PRO=true no servidor.",
-      });
-    }
-
-    const cobranca = await FinanceiroCobrancaModel.create({
-      TimeModelId: timeId,
-      UsuarioTimeModelId: alvo.id,
-      valor: valorNum.toFixed(2),
-      descricao,
-      status: "pendente",
-      payerEmail: email,
-    });
-
-    const externalReference = `fc-${cobranca.id}`;
-    await cobranca.update({ externalReference });
-
-    const accessToken = await ensureValidAccessToken(oauthRow);
-
-    const publicBase = (process.env.API_PUBLIC_URL || "").replace(/\/$/, "");
-    const front = normalizeFrontendBase();
-    const webhookToken = process.env.MERCADO_PAGO_WEBHOOK_TOKEN || "";
-    const notificationPath = `/api/financeiro/mercado-pago/webhook`;
-    const notificationUrl = publicBase
-      ? `${publicBase}${notificationPath}${webhookToken ? `?token=${encodeURIComponent(webhookToken)}` : ""}`
-      : undefined;
-
-    const nomeAtleta = alvo.UsuarioModel?.nome ? String(alvo.UsuarioModel.nome) : "";
-    const { first_name, last_name } = nomeParaPayerMercadoPago(nomeAtleta);
-    const payer = {
-      email,
-      first_name,
-      last_name,
-    };
-    if (cpfValido) {
-      payer.identification = { type: "CPF", number: cpfValido };
-    }
-
-    const warningWebhook =
-      !publicBase &&
-      "Defina API_PUBLIC_URL na API para que o Mercado Pago notifique pagamentos automaticamente (webhook).";
-
-    if (!usarCheckoutPro) {
-      const paymentBody = {
-        transaction_amount: Number(Number(valorNum).toFixed(2)),
-        description: descricao.slice(0, 256),
-        payment_method_id: "pix",
-        payer: {
-          email,
-          first_name,
-          last_name,
-          identification: { type: "CPF", number: cpfValido },
-        },
-        external_reference: externalReference,
-      };
-      if (notificationUrl) {
-        paymentBody.notification_url = notificationUrl;
-      }
-
-      const payment = await createPaymentWithToken(accessToken, paymentBody, {
-        idempotencyKey: `fc-${cobranca.id}-${externalReference}`,
-      });
-
-      const tx = payment.point_of_interaction?.transaction_data || {};
-      const qrB64 = tx.qr_code_base64 || null;
-      const qrCode = tx.qr_code || null;
-
-      await cobranca.update({
-        mpPaymentId: payment.id != null ? String(payment.id) : null,
-        mpPreferenceId: null,
-        initPoint: null,
-        sandboxInitPoint: null,
-      });
-
-      return res.status(201).json({
-        fluxo: "pix_embutido",
+      cobrancasCriadas.push({
         id: cobranca.id,
-        externalReference,
+        grupoCobrancaId: cobranca.grupoCobrancaId,
+        valor: cobranca.valor,
+        valorCobrado: cobranca.valorCobrado,
+        nome: cobranca.nome,
+        descricao: cobranca.descricao,
         status: cobranca.status,
-        mpPaymentId: payment.id != null ? String(payment.id) : null,
-        mpStatus: payment.status,
-        mpStatusDetail: payment.status_detail || null,
-        pix: {
-          qrCodeBase64: qrB64,
-          qrCode,
-          ticketUrl: tx.ticket_url || null,
+        createdAt: cobranca.createdAt,
+        atleta: {
+          usuario_time_id: alvo.id,
+          nome: alvo.UsuarioModel?.nome ?? "Atleta",
+          email: email,
         },
-        warning: warningWebhook || undefined,
       });
     }
-
-    const successUrl = `${front}/admin/financeiro?mp=cobranca_ok`;
-    const preferenceBody = {
-      items: [
-        {
-          title: descricao.slice(0, 256),
-          quantity: 1,
-          unit_price: valorNum,
-          currency_id: "BRL",
-        },
-      ],
-      payer,
-      external_reference: externalReference,
-      back_urls: {
-        success: successUrl,
-        failure: `${front}/admin/financeiro?mp=cobranca_erro`,
-        pending: `${front}/admin/financeiro?mp=cobranca_pendente`,
-      },
-    };
-
-    if (mercadoPagoAceitaAutoReturnParaUrl(successUrl)) {
-      preferenceBody.auto_return = "approved";
-    }
-
-    if (notificationUrl) {
-      preferenceBody.notification_url = notificationUrl;
-    }
-
-    const pixOnly = paymentMethodsPreferenciaPix();
-    if (pixOnly) {
-      preferenceBody.payment_methods = pixOnly;
-    }
-
-    const pref = await createPreferenceWithToken(accessToken, preferenceBody);
-
-    await cobranca.update({
-      mpPreferenceId: pref.id != null ? String(pref.id) : null,
-      initPoint: pref.init_point || null,
-      sandboxInitPoint: pref.sandbox_init_point || null,
-    });
 
     return res.status(201).json({
-      fluxo: "checkout_pro",
-      id: cobranca.id,
-      externalReference,
-      status: cobranca.status,
-      initPoint: pref.init_point || null,
-      sandboxInitPoint: pref.sandbox_init_point || null,
-      mpPreferenceId: pref.id != null ? String(pref.id) : null,
-      warning: warningWebhook || undefined,
+      items: cobrancasCriadas,
     });
   } catch (error) {
     console.error(error.response?.data || error.message);
     const status = error.response?.status || 500;
     return res.status(status >= 400 && status < 600 ? status : 500).json({
-      message: "Erro ao criar cobrança no Mercado Pago.",
+      message: "Erro ao criar cobranças.",
       details: error.response?.data || null,
     });
   }

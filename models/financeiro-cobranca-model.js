@@ -23,6 +23,20 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
       },
+      valorCobrado: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: false,
+        field: "valor_cobrado",
+      },
+      grupoCobrancaId: {
+        type: DataTypes.STRING(64),
+        allowNull: false,
+        field: "grupo_cobranca_id",
+      },
+      nome: {
+        type: DataTypes.STRING(120),
+        allowNull: false,
+      },
       descricao: {
         type: DataTypes.STRING(500),
         allowNull: false,
