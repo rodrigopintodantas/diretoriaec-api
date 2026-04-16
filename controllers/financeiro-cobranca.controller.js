@@ -11,6 +11,7 @@ const {
   getPaymentWithToken,
 } = require("../services/mercadopago.service");
 const { randomUUID } = require("crypto");
+const { Op } = require("sequelize");
 
 function mapPaymentStatusToLocal(mpStatus) {
   if (mpStatus === "approved") return "pago";
@@ -60,6 +61,16 @@ function nomeParaPayerMercadoPago(nomeCompleto) {
   const first = partes[0] || "Cliente";
   const last = partes.length > 1 ? partes.slice(1).join(" ") : first;
   return { first_name: first.slice(0, 256), last_name: last.slice(0, 256) };
+}
+
+function buildNotificationUrl() {
+  const publicBase = (process.env.API_PUBLIC_URL || "").replace(/\/$/, "");
+  if (!publicBase) {
+    return null;
+  }
+  const webhookToken = process.env.MERCADO_PAGO_WEBHOOK_TOKEN || "";
+  const path = "/api/financeiro/mercado-pago/webhook";
+  return `${publicBase}${path}${webhookToken ? `?token=${encodeURIComponent(webhookToken)}` : ""}`;
 }
 
 async function getVinculoAdmin(req) {
@@ -309,6 +320,10 @@ exports.gerarPixCobrancaAtleta = async (req, res) => {
       },
       external_reference: externalReference,
     };
+    const notificationUrl = buildNotificationUrl();
+    if (notificationUrl) {
+      paymentBody.notification_url = notificationUrl;
+    }
 
     const payment = await createPaymentWithToken(accessToken, paymentBody, {
       idempotencyKey: `pix-cobranca-${cobranca.id}-${cpfValido}`,
@@ -486,6 +501,60 @@ exports.syncCobranca = async (req, res) => {
   }
 };
 
+exports.syncCobrancasPendentesAdmin = async (req, res) => {
+  try {
+    const vinculo = await getVinculoAdmin(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Administrador") {
+      return res.status(403).json({ message: "Acesso negado." });
+    }
+
+    const oauthRow = await TimeMercadoPagoOauthModel.findOne({
+      where: { TimeModelId: vinculo.TimeModelId },
+    });
+    if (!oauthRow) {
+      return res.status(200).json({ ok: true, sincronizadas: 0, falhas: 0, motivo: "mp_nao_conectado" });
+    }
+
+    const pendentes = await FinanceiroCobrancaModel.findAll({
+      where: {
+        TimeModelId: vinculo.TimeModelId,
+        status: "pendente",
+        mpPaymentId: { [Op.ne]: null },
+      },
+      attributes: ["id", "status", "mpPaymentId"],
+      order: [["updatedAt", "DESC"]],
+      limit: 300,
+    });
+
+    if (!pendentes.length) {
+      return res.status(200).json({ ok: true, sincronizadas: 0, falhas: 0 });
+    }
+
+    const accessToken = await ensureValidAccessToken(oauthRow);
+    let sincronizadas = 0;
+    let falhas = 0;
+
+    for (const cobranca of pendentes) {
+      try {
+        const payment = await getPaymentWithToken(accessToken, cobranca.mpPaymentId);
+        const novoStatus = mapPaymentStatusToLocal(payment.status);
+        await cobranca.update({
+          status: novoStatus,
+          mpPaymentId: payment.id != null ? String(payment.id) : cobranca.mpPaymentId,
+        });
+        sincronizadas += 1;
+      } catch (e) {
+        falhas += 1;
+      }
+    }
+
+    return res.status(200).json({ ok: true, sincronizadas, falhas });
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    return res.status(500).json({ message: "Erro ao sincronizar cobranças pendentes." });
+  }
+};
+
 async function resolvePaymentFromWebhook(paymentId) {
   const rows = await TimeMercadoPagoOauthModel.findAll({
     attributes: ["id", "TimeModelId", "accessToken", "refreshToken", "tokenExpiresAt", "mpUserId"],
@@ -541,6 +610,7 @@ exports.handleMercadoPagoWebhook = async (req, res) => {
     }
 
     let result = null;
+    const q = req.query || {};
     const mpUserId =
       (req.body && req.body.user_id != null && String(req.body.user_id)) ||
       (q.user_id != null && String(q.user_id));

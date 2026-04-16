@@ -184,6 +184,11 @@ router.post(
   authorize(["Administrador"]),
   financeiroCobranca.syncCobranca,
 );
+router.post(
+  "/cobrancas/sincronizar-pendentes",
+  authorize(["Administrador"]),
+  financeiroCobranca.syncCobrancasPendentesAdmin,
+);
 
 /** Notificação Mercado Pago (sem JWT). Configure notification_url na preferência com API_PUBLIC_URL. */
 router.post("/mercado-pago/webhook", financeiroCobranca.handleMercadoPagoWebhook);
