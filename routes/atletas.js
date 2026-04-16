@@ -13,7 +13,7 @@ const router = express.Router();
 
 const ORDEM_POSICAO = ["Goleiro", "Defensor", "Meio-Campista", "Atacante"];
 
-router.get("/elenco", authorize(["Administrador"]), async (req, res, next) => {
+router.get("/elenco", authorize(["Administrador", "Atleta"]), async (req, res, next) => {
   try {
     const membershipId = parseInt(String(req.headers.up), 10);
     const vinculo = await UsuarioTimeModel.findOne({
