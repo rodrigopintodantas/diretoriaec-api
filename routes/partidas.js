@@ -115,6 +115,31 @@ async function getVinculoSelecionado(req) {
   });
 }
 
+function montarPayloadPartida({ meuTime, nomeAdversario, mandante }) {
+  const meuNome = meuTime.nome;
+  const minhaSigla = (meuTime.sigla ?? "").trim() || siglaDeNome(meuNome);
+  const adversarioSigla = siglaDeNome(nomeAdversario, "ADV");
+  const souMandante = mandante === true || mandante === "true";
+
+  return souMandante
+    ? {
+        id_time_1: meuTime.id,
+        nome_time_1: meuNome,
+        sigla_time_1: minhaSigla,
+        id_time_2: null,
+        nome_time_2: nomeAdversario,
+        sigla_time_2: adversarioSigla,
+      }
+    : {
+        id_time_1: null,
+        nome_time_1: nomeAdversario,
+        sigla_time_1: adversarioSigla,
+        id_time_2: meuTime.id,
+        nome_time_2: meuNome,
+        sigla_time_2: minhaSigla,
+      };
+}
+
 function serializarJogo(jogo) {
   return {
     id: jogo.id,
@@ -420,28 +445,7 @@ router.post("/meus-jogos", authorize(["Administrador"]), async (req, res, next) 
     }
 
     const meuTime = vinculo.TimeModel;
-    const meuNome = meuTime.nome;
-    const minhaSigla = (meuTime.sigla ?? "").trim() || siglaDeNome(meuNome);
-    const adversarioSigla = siglaDeNome(nomeAdversario, "ADV");
-    const souMandante = mandante === true || mandante === "true";
-
-    const payload = souMandante
-      ? {
-          id_time_1: meuTime.id,
-          nome_time_1: meuNome,
-          sigla_time_1: minhaSigla,
-          id_time_2: null,
-          nome_time_2: nomeAdversario,
-          sigla_time_2: adversarioSigla,
-        }
-      : {
-          id_time_1: null,
-          nome_time_1: nomeAdversario,
-          sigla_time_1: adversarioSigla,
-          id_time_2: meuTime.id,
-          nome_time_2: meuNome,
-          sigla_time_2: minhaSigla,
-        };
+    const payload = montarPayloadPartida({ meuTime, nomeAdversario, mandante });
 
     const nova = await PartidaModel.create({
       ...payload,
@@ -452,6 +456,88 @@ router.post("/meus-jogos", authorize(["Administrador"]), async (req, res, next) 
     });
 
     return res.status(201).json(serializarJogo(nova));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/meus-jogos/:id", authorize(["Administrador"]), async (req, res, next) => {
+  try {
+    const vinculo = await getVinculoSelecionado(req);
+    if (!vinculo) {
+      return res.status(400).json({ message: "Vínculo não encontrado." });
+    }
+
+    const timeId = vinculo.TimeModelId;
+    const partidaId = parseInt(req.params.id, 10);
+    if (Number.isNaN(partidaId)) {
+      return res.status(400).json({ message: "Id da partida inválido." });
+    }
+
+    const partida = await findPartidaDoTime(partidaId, timeId);
+    if (!partida) {
+      return res.status(404).json({ message: "Partida não encontrada." });
+    }
+
+    const statusAtual = String(partida.status || "").trim().toUpperCase();
+    if (statusAtual === "REALIZADA") {
+      return res.status(400).json({ message: "Não é possível editar uma partida já realizada." });
+    }
+
+    const { local, data, hora, nome_time_adversario, mandante } = req.body ?? {};
+    if (!local || !data || !hora || !nome_time_adversario) {
+      return res
+        .status(400)
+        .json({ message: "Campos obrigatórios: local, data, hora e nome do time adversário." });
+    }
+
+    const nomeAdversario = String(nome_time_adversario).trim();
+    if (!nomeAdversario) {
+      return res.status(400).json({ message: "Informe o nome do time adversário." });
+    }
+
+    const meuTime = vinculo.TimeModel;
+    const payload = montarPayloadPartida({ meuTime, nomeAdversario, mandante });
+
+    await partida.update({
+      ...payload,
+      local: String(local).trim(),
+      data,
+      hora,
+    });
+
+    return res.json(serializarJogo(partida));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/meus-jogos/:id", authorize(["Administrador"]), async (req, res, next) => {
+  try {
+    const vinculo = await getVinculoSelecionado(req);
+    if (!vinculo) {
+      return res.status(400).json({ message: "Vínculo não encontrado." });
+    }
+
+    const timeId = vinculo.TimeModelId;
+    const partidaId = parseInt(req.params.id, 10);
+    if (Number.isNaN(partidaId)) {
+      return res.status(400).json({ message: "Id da partida inválido." });
+    }
+
+    const partida = await findPartidaDoTime(partidaId, timeId);
+    if (!partida) {
+      return res.status(404).json({ message: "Partida não encontrada." });
+    }
+
+    const statusAtual = String(partida.status || "").trim().toUpperCase();
+    const realizada = statusAtual === "REALIZADA" || (partida.placar_time_1 != null && partida.placar_time_2 != null);
+    if (realizada) {
+      return res.status(400).json({ message: "Não é possível cancelar uma partida já realizada." });
+    }
+
+    await partida.destroy();
+    return res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -506,14 +592,13 @@ router.patch("/meus-jogos/:id/resultado", authorize(["Administrador"]), async (r
     const yyyy = agora.getFullYear();
     const mm = String(agora.getMonth() + 1).padStart(2, "0");
     const dd = String(agora.getDate()).padStart(2, "0");
-    const hh = String(agora.getHours()).padStart(2, "0");
-    const min = String(agora.getMinutes()).padStart(2, "0");
-    const ss = String(agora.getSeconds()).padStart(2, "0");
+    const dataAtualizacao = `${yyyy}-${mm}-${dd}`;
+    const dataPartidaAtual = String(partida.data);
+    const novaDataPartida = dataAtualizacao < dataPartidaAtual ? dataAtualizacao : dataPartidaAtual;
 
     await partida.update(
       {
-        data: `${yyyy}-${mm}-${dd}`,
-        hora: `${hh}:${min}:${ss}`,
+        data: novaDataPartida,
         placar_time_1: p1,
         placar_time_2: p2,
         status: novoStatus,
