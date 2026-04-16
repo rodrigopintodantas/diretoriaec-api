@@ -61,4 +61,41 @@ router.post("/login", async (req, res, next) => {
 router.get("/", authorizeSemPerfilSelecionado());
 router.get("/perfil", authBearerLogin(), perfil);
 
+router.post("/alterar-senha", authBearerLogin(), async (req, res, next) => {
+  try {
+    const senhaAtual = req.body?.senha_atual != null ? String(req.body.senha_atual) : "";
+    const senhaNova = req.body?.senha_nova != null ? String(req.body.senha_nova) : "";
+    const senhaNovaConfirmacao =
+      req.body?.senha_nova_confirmacao != null ? String(req.body.senha_nova_confirmacao) : "";
+
+    if (!senhaAtual) {
+      return res.status(400).json({ message: "Informe a senha atual." });
+    }
+    if (senhaNova.length < 6) {
+      return res.status(400).json({ message: "A nova senha deve ter pelo menos 6 caracteres." });
+    }
+    if (senhaNova !== senhaNovaConfirmacao) {
+      return res.status(400).json({ message: "A confirmação da nova senha não confere." });
+    }
+
+    const usuario = await UsuarioModel.unscoped().findByPk(req.auth.UsuarioId);
+    if (!usuario || !usuario.senha_hash) {
+      return res.status(400).json({ message: "Usuário não encontrado." });
+    }
+
+    const ok = await bcrypt.compare(senhaAtual, usuario.senha_hash);
+    if (!ok) {
+      return res.status(400).json({ message: "Senha atual incorreta." });
+    }
+
+    const rounds = 10;
+    const novoHash = await bcrypt.hash(senhaNova, rounds);
+    await usuario.update({ senha_hash: novoHash });
+
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
