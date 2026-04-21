@@ -49,13 +49,16 @@ router.get("/elenco", authorize(["Administrador", "Atleta"]), async (req, res, n
     for (const row of rows) {
       const pos = row.PosicaoModel;
       const key = pos ? pos.nome : "__sem_posicao__";
+      const usuario = row.UsuarioModel;
+      if (String(usuario?.nome ?? "").trim() === "Administrador") {
+        continue;
+      }
       if (!gruposMap.has(key)) {
         gruposMap.set(key, {
           posicao: pos ? { id: pos.id, nome: pos.nome } : null,
           atletas: [],
         });
       }
-      const usuario = row.UsuarioModel;
       const nomePapel = String(row.PapelModel?.nome ?? "").trim();
       gruposMap.get(key).atletas.push({
         usuario_time_id: row.id,
@@ -117,6 +120,9 @@ router.get("/elenco", authorize(["Administrador", "Atleta"]), async (req, res, n
       );
       diretoria = dirRows.map((row) => {
         const u = row.UsuarioModel;
+        if (String(u?.nome ?? "").trim() === "Administrador") {
+          return null;
+        }
         return {
           usuario_time_id: row.id,
           id: u.id,
@@ -125,7 +131,7 @@ router.get("/elenco", authorize(["Administrador", "Atleta"]), async (req, res, n
           email: u.email,
           telefone: u.telefone,
         };
-      });
+      }).filter(Boolean);
     }
 
     res.json({

@@ -388,22 +388,39 @@ exports.createCobranca = async (req, res) => {
       return res.status(400).json({ message: "Selecione ao menos um atleta para a cobrança." });
     }
 
-    const papelAtleta = await PapelModel.findOne({ where: { nome: "Atleta" }, attributes: ["id"] });
-    if (!papelAtleta) {
-      return res.status(500).json({ message: "Papel Atleta não encontrado no sistema." });
+    const [papelAtleta, papelAdmin] = await Promise.all([
+      PapelModel.findOne({ where: { nome: "Atleta" }, attributes: ["id"] }),
+      PapelModel.findOne({ where: { nome: "Administrador" }, attributes: ["id"] }),
+    ]);
+    if (!papelAtleta || !papelAdmin) {
+      return res.status(500).json({ message: "Papéis Atleta/Administrador não encontrados no sistema." });
     }
 
     const atletasAlvo = await UsuarioTimeModel.findAll({
       where: {
         id: usuarioTimeIds,
         TimeModelId: timeId,
-        PapelModelId: papelAtleta.id,
+        PapelModelId: [papelAtleta.id, papelAdmin.id],
       },
-      include: [{ model: UsuarioModel, attributes: ["id", "nome", "email"] }],
+      include: [
+        { model: UsuarioModel, attributes: ["id", "nome", "email"] },
+        { model: PapelModel, attributes: ["id", "nome"] },
+      ],
     });
 
     if (atletasAlvo.length !== usuarioTimeIds.length) {
-      return res.status(400).json({ message: "Um ou mais atletas selecionados não pertencem a este time." });
+      return res
+        .status(400)
+        .json({ message: "Um ou mais vínculos selecionados não pertencem a este time ou não podem ser cobrados." });
+    }
+
+    const contemUsuarioAdministrador = atletasAlvo.some(
+      (alvo) => String(alvo.UsuarioModel?.nome ?? "").trim() === "Administrador",
+    );
+    if (contemUsuarioAdministrador) {
+      return res.status(400).json({
+        message: "O usuário Administrador não pode ser incluído em cobranças.",
+      });
     }
 
     const grupoCobrancaId = randomUUID();

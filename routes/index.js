@@ -20,5 +20,6 @@ router.use("/push", require("./push"));
 router.use("/financeiro", require("./financeiro"));
 router.use("/oauth", require("./oauth.routes"));
 router.use("/payment", require("./payment.routes"));
+router.use("/times", require("./times"));
 
 module.exports = router;
