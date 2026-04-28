@@ -26,6 +26,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: "usuario_id",
       },
+      assistenciaUsuarioModelId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        field: "assistencia_usuario_id",
+      },
       minuto: {
         type: DataTypes.INTEGER,
         allowNull: true,
@@ -47,6 +52,13 @@ module.exports = (sequelize, DataTypes) => {
     });
     PartidaGolModel.belongsTo(models.UsuarioModel, {
       foreignKey: "usuario_id",
+      allowNull: true,
+      onDelete: "SET NULL",
+      onUpdate: "CASCADE",
+    });
+    PartidaGolModel.belongsTo(models.UsuarioModel, {
+      as: "AssistenciaUsuarioModel",
+      foreignKey: "assistencia_usuario_id",
       allowNull: true,
       onDelete: "SET NULL",
       onUpdate: "CASCADE",

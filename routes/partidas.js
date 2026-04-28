@@ -177,6 +177,8 @@ function serializarGols(gols) {
     lado: g.lado,
     usuario_id: g.UsuarioModelId,
     nome_artilheiro: g.UsuarioModel ? g.UsuarioModel.nome : null,
+    assistencia_usuario_id: g.assistenciaUsuarioModelId ?? null,
+    nome_assistencia: g.AssistenciaUsuarioModel ? g.AssistenciaUsuarioModel.nome : null,
     minuto: g.minuto,
     contra: g.contra,
   }));
@@ -343,7 +345,10 @@ router.get("/meus-jogos/:id", authorize(["Administrador"]), async (req, res, nex
 
     const gols = await PartidaGolModel.findAll({
       where: { partida_id: partidaId },
-      include: [{ model: UsuarioModel, attributes: ["id", "nome", "login"] }],
+      include: [
+        { model: UsuarioModel, attributes: ["id", "nome", "login"] },
+        { model: UsuarioModel, as: "AssistenciaUsuarioModel", attributes: ["id", "nome", "login"] },
+      ],
       order: [
         ["lado", "ASC"],
         ["minuto", "ASC NULLS LAST"],
@@ -382,7 +387,10 @@ router.get("/meus-jogos/:id/resumo", authorize(["Atleta"]), async (req, res, nex
 
     const gols = await PartidaGolModel.findAll({
       where: { partida_id: partidaId },
-      include: [{ model: UsuarioModel, attributes: ["id", "nome", "login"] }],
+      include: [
+        { model: UsuarioModel, attributes: ["id", "nome", "login"] },
+        { model: UsuarioModel, as: "AssistenciaUsuarioModel", attributes: ["id", "nome", "login"] },
+      ],
       order: [
         ["lado", "ASC"],
         ["minuto", "ASC NULLS LAST"],
@@ -618,8 +626,26 @@ router.patch("/meus-jogos/:id/resultado", authorize(["Administrador"]), async (r
         if (uid != null && Number.isNaN(uid)) {
           throw Object.assign(new Error("usuario_id inválido em gol."), { status: 400 });
         }
+        const assistUid =
+          g.assistencia_usuario_id != null && g.assistencia_usuario_id !== ""
+            ? Number(g.assistencia_usuario_id)
+            : null;
+        if (assistUid != null && Number.isNaN(assistUid)) {
+          throw Object.assign(new Error("assistencia_usuario_id inválido em gol."), { status: 400 });
+        }
 
         const timeDoLado = timeIdParaLado(partida, lado);
+        if (Boolean(g.contra) && assistUid != null) {
+          throw Object.assign(new Error("Gol contra não pode ter assistência."), { status: 400 });
+        }
+        if (uid == null && assistUid != null) {
+          throw Object.assign(new Error("Assistência só pode ser informada quando houver atleta autor do gol."), {
+            status: 400,
+          });
+        }
+        if (uid != null && assistUid != null && uid === assistUid) {
+          throw Object.assign(new Error("Autor do gol não pode ser o mesmo atleta da assistência."), { status: 400 });
+        }
         if (uid != null) {
           if (timeDoLado == null) {
             throw Object.assign(new Error("Não é possível associar atleta cadastrado a este lado (time sem id)."), {
@@ -631,12 +657,24 @@ router.patch("/meus-jogos/:id/resultado", authorize(["Administrador"]), async (r
             throw Object.assign(new Error("Atleta não pertence ao elenco deste time neste lado."), { status: 400 });
           }
         }
+        if (assistUid != null) {
+          if (timeDoLado == null) {
+            throw Object.assign(new Error("Não é possível associar assistência a este lado (time sem id)."), {
+              status: 400,
+            });
+          }
+          const assistUt = await findOneUsuarioTimeElencoPorUsuario(timeDoLado, assistUid, t);
+          if (!assistUt) {
+            throw Object.assign(new Error("Assistência deve ser de atleta do mesmo lado do gol."), { status: 400 });
+          }
+        }
 
         await PartidaGolModel.create(
           {
             partida_id: partidaId,
             lado,
             UsuarioModelId: uid,
+            assistenciaUsuarioModelId: assistUid,
             minuto: g.minuto != null ? Number(g.minuto) : null,
             contra: Boolean(g.contra),
           },
@@ -650,7 +688,10 @@ router.patch("/meus-jogos/:id/resultado", authorize(["Administrador"]), async (r
     const atualizada = await PartidaModel.findByPk(partidaId);
     const golsDb = await PartidaGolModel.findAll({
       where: { partida_id: partidaId },
-      include: [{ model: UsuarioModel, attributes: ["id", "nome", "login"] }],
+      include: [
+        { model: UsuarioModel, attributes: ["id", "nome", "login"] },
+        { model: UsuarioModel, as: "AssistenciaUsuarioModel", attributes: ["id", "nome", "login"] },
+      ],
       order: [
         ["lado", "ASC"],
         ["minuto", "ASC NULLS LAST"],
