@@ -234,7 +234,7 @@ async function buscarConvocacaoSerializada(partidaId, timeId) {
   };
 }
 
-router.get("/meus-jogos", authorize(["Administrador"]), async (req, res, next) => {
+router.get("/meus-jogos", authorize(["Administrador", "Atleta"]), async (req, res, next) => {
   try {
     const vinculo = await getVinculoSelecionado(req);
     if (!vinculo) {
@@ -326,7 +326,7 @@ router.get("/jogos-convocado", authorize(["Atleta"]), async (req, res, next) => 
   }
 });
 
-router.get("/meus-jogos/:id", authorize(["Administrador"]), async (req, res, next) => {
+router.get("/meus-jogos/:id", authorize(["Administrador", "Atleta"]), async (req, res, next) => {
   try {
     const vinculo = await getVinculoSelecionado(req);
     if (!vinculo) {

@@ -85,11 +85,11 @@ router.post("/", authBearerLogin(), async (req, res, next) => {
   }
 });
 
-router.get("/meu-time", authorize(["Administrador"]), async (req, res, next) => {
+router.get("/meu-time", authBearerLogin(), async (req, res, next) => {
   try {
     const vinculo = await getVinculoSelecionadoAdmin(req);
-    if (!vinculo || vinculo.PapelModel?.nome !== "Administrador") {
-      return res.status(403).json({ message: "Apenas administradores podem consultar o time." });
+    if (!vinculo) {
+      return res.status(403).json({ message: "Vínculo de time não encontrado para o usuário." });
     }
     const time = vinculo.TimeModel;
     if (!time) {
