@@ -17,6 +17,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      descricao: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
     },
     { freezeTableName: true, tableName: "time", timestamps: true },
   );

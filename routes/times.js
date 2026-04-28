@@ -1,8 +1,25 @@
 const express = require("express");
 const { sequelize, TimeModel, UsuarioTimeModel, PapelModel, UsuarioModel } = require("../models");
-const { authBearerLogin } = require("../auth/authorize");
+const { authBearerLogin, authorize } = require("../auth/authorize");
 
 const router = express.Router();
+
+async function getVinculoSelecionadoAdmin(req) {
+  const membershipId = parseInt(String(req.headers.up), 10);
+  if (Number.isNaN(membershipId)) {
+    return null;
+  }
+  return UsuarioTimeModel.findOne({
+    where: {
+      id: membershipId,
+      UsuarioModelId: req.auth.UsuarioId,
+    },
+    include: [
+      { model: PapelModel, attributes: ["nome"] },
+      { model: TimeModel, attributes: ["id", "nome", "sigla", "descricao"] },
+    ],
+  });
+}
 
 router.post("/", authBearerLogin(), async (req, res, next) => {
   try {
@@ -61,6 +78,68 @@ router.post("/", authBearerLogin(), async (req, res, next) => {
         id: time.id,
         nome: time.nome,
         sigla: time.sigla ?? null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/meu-time", authorize(["Administrador"]), async (req, res, next) => {
+  try {
+    const vinculo = await getVinculoSelecionadoAdmin(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Administrador") {
+      return res.status(403).json({ message: "Apenas administradores podem consultar o time." });
+    }
+    const time = vinculo.TimeModel;
+    if (!time) {
+      return res.status(404).json({ message: "Time não encontrado." });
+    }
+    return res.status(200).json({
+      time: {
+        id: time.id,
+        nome: time.nome,
+        sigla: time.sigla ?? null,
+        descricao: time.descricao ?? null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/meu-time", authorize(["Administrador"]), async (req, res, next) => {
+  try {
+    const vinculo = await getVinculoSelecionadoAdmin(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Administrador") {
+      return res.status(403).json({ message: "Apenas administradores podem editar o time." });
+    }
+    const time = vinculo.TimeModel;
+    if (!time) {
+      return res.status(404).json({ message: "Time não encontrado." });
+    }
+
+    const siglaRaw = req.body?.sigla != null ? String(req.body.sigla).trim().toUpperCase() : "";
+    const descricaoRaw = req.body?.descricao != null ? String(req.body.descricao).trim() : "";
+    const sigla = siglaRaw || null;
+    const descricao = descricaoRaw || null;
+
+    if (sigla && !/^[A-Z]{3}$/.test(sigla)) {
+      return res.status(400).json({ message: "A sigla deve conter exatamente 3 letras." });
+    }
+    if (descricao && descricao.length > 500) {
+      return res.status(400).json({ message: "A descrição deve ter no máximo 500 caracteres." });
+    }
+
+    await time.update({ sigla, descricao });
+
+    return res.status(200).json({
+      message: "Time atualizado com sucesso.",
+      time: {
+        id: time.id,
+        nome: time.nome,
+        sigla: time.sigla ?? null,
+        descricao: time.descricao ?? null,
       },
     });
   } catch (err) {
