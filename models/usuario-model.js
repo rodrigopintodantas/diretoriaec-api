@@ -63,6 +63,11 @@ module.exports = (sequelize, DataTypes) => {
       onDelete: "CASCADE",
       onUpdate: "CASCADE",
     });
+    UsuarioModel.hasMany(models.PushDeviceTokenModel, {
+      foreignKey: "usuario_id",
+      onDelete: "CASCADE",
+      onUpdate: "CASCADE",
+    });
   };
 
   return UsuarioModel;
