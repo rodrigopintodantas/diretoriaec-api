@@ -77,6 +77,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: "payer_email",
       },
+      notificacaoCobrancaEm: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: "notificacao_cobranca_em",
+      },
     },
     { freezeTableName: true, tableName: "financeiro_cobranca", timestamps: true },
   );

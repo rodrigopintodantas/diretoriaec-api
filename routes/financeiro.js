@@ -194,6 +194,11 @@ router.post(
   authorize(["Administrador"]),
   financeiroCobranca.registrarRecebimentoManual,
 );
+router.post(
+  "/cobrancas/:grupoId/notificar-pendentes",
+  authorize(["Administrador"]),
+  financeiroCobranca.notificarCobrancaPendentes,
+);
 
 /** Notificação Mercado Pago (sem JWT). Configure notification_url na preferência com API_PUBLIC_URL. */
 router.post("/mercado-pago/webhook", financeiroCobranca.handleMercadoPagoWebhook);

@@ -2,6 +2,7 @@ const {
   UsuarioTimeModel,
   UsuarioModel,
   PapelModel,
+  TimeModel,
   TimeMercadoPagoOauthModel,
   FinanceiroCobrancaModel,
 } = require("../models");
@@ -10,8 +11,10 @@ const {
   createPaymentWithToken,
   getPaymentWithToken,
 } = require("../services/mercadopago.service");
+const { notificarCobrancaPendente } = require("../lib/push-send");
 const { randomUUID } = require("crypto");
 const { Op } = require("sequelize");
+const COOLDOWN_NOTIFICACAO_COBRANCA_MS = 24 * 60 * 60 * 1000;
 
 function mapPaymentStatusToLocal(mpStatus) {
   if (mpStatus === "approved") return "pago";
@@ -139,12 +142,16 @@ exports.listCobrancas = async (req, res) => {
           descricao: r.descricao,
           valor: r.valor,
           valorCobrado: r.valorCobrado,
+          notificacaoCobrancaEm: r.notificacaoCobrancaEm,
           createdAt: r.createdAt,
           updatedAt: r.updatedAt,
           atletas: [],
         });
       }
       const grupo = grupos.get(grupoId);
+      if (!grupo.notificacaoCobrancaEm && r.notificacaoCobrancaEm) {
+        grupo.notificacaoCobrancaEm = r.notificacaoCobrancaEm;
+      }
       grupo.atletas.push({
         id: r.id,
         status: r.status,
@@ -612,6 +619,95 @@ exports.registrarRecebimentoManual = async (req, res) => {
   } catch (error) {
     console.error(error.response?.data || error.message);
     return res.status(500).json({ message: "Erro ao registrar recebimento manual." });
+  }
+};
+
+exports.notificarCobrancaPendentes = async (req, res) => {
+  try {
+    const vinculo = await getVinculoAdmin(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Administrador") {
+      return res.status(403).json({ message: "Acesso negado." });
+    }
+
+    const grupoId = String(req.params.grupoId || "").trim();
+    if (!grupoId) {
+      return res.status(400).json({ message: "Grupo de cobrança inválido." });
+    }
+
+    const cobrancasGrupo = await FinanceiroCobrancaModel.findAll({
+      where: {
+        TimeModelId: vinculo.TimeModelId,
+        grupoCobrancaId: grupoId,
+      },
+      attributes: ["id", "nome", "status", "UsuarioTimeModelId", "notificacaoCobrancaEm"],
+      order: [["id", "ASC"]],
+    });
+
+    if (!cobrancasGrupo.length) {
+      return res.status(404).json({ message: "Cobrança não encontrada." });
+    }
+
+    const ultimaNotificacao = cobrancasGrupo
+      .map((c) => (c.notificacaoCobrancaEm ? new Date(c.notificacaoCobrancaEm) : null))
+      .filter(Boolean)
+      .sort((a, b) => b.getTime() - a.getTime())[0];
+    if (ultimaNotificacao) {
+      const proximoEnvioEm = new Date(ultimaNotificacao.getTime() + COOLDOWN_NOTIFICACAO_COBRANCA_MS);
+      if (Date.now() < proximoEnvioEm.getTime()) {
+        return res.status(429).json({
+          message: "Aguarde 24h para reenviar cobrança.",
+          proximo_envio_em: proximoEnvioEm.toISOString(),
+        });
+      }
+    }
+
+    const pendentes = cobrancasGrupo.filter((c) => {
+      const status = String(c.status || "").trim().toLowerCase();
+      return status !== "pago" && status !== "recebido";
+    });
+    if (!pendentes.length) {
+      return res.status(400).json({ message: "Todos os atletas desta cobrança já quitaram." });
+    }
+
+    const usuarioTimeIds = [...new Set(pendentes.map((c) => Number(c.UsuarioTimeModelId)).filter((x) => Number.isFinite(x)))];
+    const usuarioTimeRows = await UsuarioTimeModel.findAll({
+      where: { id: { [Op.in]: usuarioTimeIds } },
+      attributes: ["UsuarioModelId"],
+    });
+    const usuarioIds = [...new Set(usuarioTimeRows.map((u) => Number(u.UsuarioModelId)).filter((x) => Number.isFinite(x)))];
+    const time = await TimeModel.findByPk(vinculo.TimeModelId, { attributes: ["nome"] });
+
+    const agora = new Date();
+    await FinanceiroCobrancaModel.update(
+      { notificacaoCobrancaEm: agora },
+      {
+        where: {
+          TimeModelId: vinculo.TimeModelId,
+          grupoCobrancaId: grupoId,
+        },
+      },
+    );
+
+    setImmediate(() => {
+      notificarCobrancaPendente({
+        usuarioIds,
+        cobranca: {
+          id: grupoId,
+          nome: cobrancasGrupo[0].nome,
+          nomeClube: time?.nome ?? "clube",
+        },
+      }).catch((e) => console.error("[push] cobranca pendente:", e));
+    });
+
+    return res.status(200).json({
+      ok: true,
+      notificados: usuarioIds.length,
+      proximo_envio_em: new Date(agora.getTime() + COOLDOWN_NOTIFICACAO_COBRANCA_MS).toISOString(),
+      notificacao_cobranca_em: agora.toISOString(),
+    });
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    return res.status(500).json({ message: "Erro ao notificar pendências da cobrança." });
   }
 };
 
