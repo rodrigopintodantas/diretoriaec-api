@@ -189,6 +189,11 @@ router.post(
   authorize(["Administrador"]),
   financeiroCobranca.syncCobrancasPendentesAdmin,
 );
+router.post(
+  "/cobrancas/:id/registrar-recebimento-manual",
+  authorize(["Administrador"]),
+  financeiroCobranca.registrarRecebimentoManual,
+);
 
 /** Notificação Mercado Pago (sem JWT). Configure notification_url na preferência com API_PUBLIC_URL. */
 router.post("/mercado-pago/webhook", financeiroCobranca.handleMercadoPagoWebhook);

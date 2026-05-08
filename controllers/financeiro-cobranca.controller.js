@@ -30,7 +30,14 @@ function calcularValorCobrado(valorInformado) {
 function calcularStatusGrupo(itens) {
   const statuses = [...new Set(itens.map((i) => String(i.status || "").trim().toLowerCase()))];
   if (!statuses.length) return "pendente";
-  if (statuses.length === 1) return statuses[0];
+  if (statuses.length === 1) {
+    if (statuses[0] === "recebido") return "pago";
+    return statuses[0];
+  }
+  const statusesNormalizados = statuses.map((s) => (s === "recebido" ? "pago" : s));
+  const statusesUnicos = [...new Set(statusesNormalizados)];
+  if (statusesUnicos.length === 1) return statusesUnicos[0];
+  if (statusesUnicos.includes("pendente") && statusesUnicos.includes("pago")) return "parcial";
   if (statuses.includes("pendente")) return "pendente";
   if (statuses.includes("pago")) return "parcial";
   return statuses[0];
@@ -569,6 +576,42 @@ exports.syncCobrancasPendentesAdmin = async (req, res) => {
   } catch (error) {
     console.error(error.response?.data || error.message);
     return res.status(500).json({ message: "Erro ao sincronizar cobranças pendentes." });
+  }
+};
+
+exports.registrarRecebimentoManual = async (req, res) => {
+  try {
+    const vinculo = await getVinculoAdmin(req);
+    if (!vinculo || vinculo.PapelModel?.nome !== "Administrador") {
+      return res.status(403).json({ message: "Acesso negado." });
+    }
+
+    const id = parseInt(String(req.params.id), 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "Id inválido." });
+    }
+
+    const cobranca = await FinanceiroCobrancaModel.findOne({
+      where: { id, TimeModelId: vinculo.TimeModelId },
+    });
+    if (!cobranca) {
+      return res.status(404).json({ message: "Cobrança não encontrada." });
+    }
+
+    const statusAtual = String(cobranca.status || "").trim().toLowerCase();
+    if (statusAtual === "cancelado") {
+      return res.status(400).json({ message: "Não é possível registrar recebimento em cobrança cancelada." });
+    }
+
+    await cobranca.update({ status: "recebido" });
+
+    return res.status(200).json({
+      id: cobranca.id,
+      status: "recebido",
+    });
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    return res.status(500).json({ message: "Erro ao registrar recebimento manual." });
   }
 };
 
